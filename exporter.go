@@ -354,10 +354,19 @@ func scrapeMySQLConnectionPool(db *sql.DB, ch chan<- prometheus.Metric) error {
 }
 
 const mySQLConnectionListQuery = "SELECT COUNT(cli_host) as connection_count, cli_host FROM stats_mysql_processlist GROUP BY cli_host"
+const mySQLSrvConnectionListQuery = "SELECT COUNT(srv_host) as srv_connection_count, srv_host FROM stats_mysql_processlist GROUP BY srv_host"
 
 var mySQLconnectionListMetrics = map[string]*metric{
-	"connection_count": {"client_connection_list", prometheus.GaugeValue,
-		"Total number of frontend connections"},
+	"connection_count": {
+		name:      "client_connection_list",
+		valueType: prometheus.GaugeValue,
+		help:      "Total number of frontend connections",
+	},
+	"srv_connection_count": {
+		name:      "server_connection_list",
+		valueType: prometheus.GaugeValue,
+		help:      "Total number of backend connections",
+	},
 }
 
 // scrapeMySQLConnectionList collects connection list from `stats_mysql_processlist`.
@@ -373,14 +382,11 @@ func scrapeMySQLConnectionList(db *sql.DB, ch chan<- prometheus.Metric) error {
 		return err
 	}
 
-	scan := make([]interface{}, len(columns))
-	var cliHost string
+	var host string
 	var connNum float64
 
-	scan[0], scan[1] = &connNum, &cliHost
-
 	for rows.Next() {
-		if err = rows.Scan(scan...); err != nil {
+		if err = rows.Scan(&connNum, &host); err != nil {
 			return err
 		}
 
@@ -399,13 +405,58 @@ func scrapeMySQLConnectionList(db *sql.DB, ch chan<- prometheus.Metric) error {
 			prometheus.NewDesc(
 				prometheus.BuildFQName(namespace, "processlist", m.name),
 				m.help,
-				[]string{"client_host"}, nil,
+				[]string{"client_host"},
+				nil,
 			),
-			m.valueType, connNum,
-			cliHost,
+			m.valueType, connNum, host,
 		)
 	}
-	return rows.Err()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+
+	srvrows, err := db.Query(mySQLSrvConnectionListQuery)
+	if err != nil {
+		return err
+	}
+	defer srvrows.Close()
+
+	columns, err = srvrows.Columns()
+	if err != nil {
+		return err
+	}
+
+	for srvrows.Next() {
+		if err = srvrows.Scan(&connNum, &host); err != nil {
+			return err
+		}
+
+		column := strings.ToLower(columns[0])
+
+		m := mySQLconnectionListMetrics[column]
+		if m == nil {
+			m = &metric{
+				name:      "server_connection_list",
+				valueType: prometheus.UntypedValue,
+				help:      "Undocumented stats_mysql_processlist metric.",
+			}
+		}
+
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(
+				prometheus.BuildFQName(namespace, "processlist", m.name),
+				m.help,
+				[]string{"server_host"},
+				nil,
+			),
+			m.valueType, connNum, host,
+		)
+	}
+	if err = srvrows.Err(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // check interface

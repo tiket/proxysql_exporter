@@ -315,6 +315,14 @@ func TestScrapeMySQLConnectionList(t *testing.T) {
 		AddRow("25", "10.91.142.89")
 	mock.ExpectQuery(sanitizeQuery(mySQLConnectionListQuery)).WillReturnRows(rows)
 
+	scolumns := []string{"srv_connection_count", "srv_host"}
+	srows := sqlmock.NewRows(scolumns).
+		AddRow("10", "10.91.142.80").
+		AddRow("15", "10.91.142.82").
+		AddRow("20", "10.91.142.88").
+		AddRow("25", "10.91.142.89")
+	mock.ExpectQuery(sanitizeQuery(mySQLSrvConnectionListQuery)).WillReturnRows(srows)
+
 	ch := make(chan prometheus.Metric)
 	go func() {
 		if err = scrapeMySQLConnectionList(db, ch); err != nil {
@@ -328,6 +336,10 @@ func TestScrapeMySQLConnectionList(t *testing.T) {
 		{"proxysql_processlist_client_connection_list", prometheus.Labels{"client_host": "10.91.142.82"}, 15, dto.MetricType_GAUGE},
 		{"proxysql_processlist_client_connection_list", prometheus.Labels{"client_host": "10.91.142.88"}, 20, dto.MetricType_GAUGE},
 		{"proxysql_processlist_client_connection_list", prometheus.Labels{"client_host": "10.91.142.89"}, 25, dto.MetricType_GAUGE},
+		{"proxysql_processlist_server_connection_list", prometheus.Labels{"server_host": "10.91.142.80"}, 10, dto.MetricType_GAUGE},
+		{"proxysql_processlist_server_connection_list", prometheus.Labels{"server_host": "10.91.142.82"}, 15, dto.MetricType_GAUGE},
+		{"proxysql_processlist_server_connection_list", prometheus.Labels{"server_host": "10.91.142.88"}, 20, dto.MetricType_GAUGE},
+		{"proxysql_processlist_server_connection_list", prometheus.Labels{"server_host": "10.91.142.89"}, 25, dto.MetricType_GAUGE},
 	}
 
 	convey.Convey("Metrics comparison", t, convey.FailureContinues, func(cv convey.C) {
@@ -351,6 +363,7 @@ func TestScrapeMySQLConnectionListError(t *testing.T) {
 	defer db1.Close()
 
 	mock1.ExpectQuery(mySQLConnectionListQuery).WillReturnError(errors.New("an error"))
+	mock1.ExpectQuery(mySQLSrvConnectionListQuery).WillReturnError(errors.New("an error"))
 	ch1 := make(chan prometheus.Metric)
 
 	go func() {
@@ -360,6 +373,7 @@ func TestScrapeMySQLConnectionListError(t *testing.T) {
 
 	mySQLconnectionListMetrics = map[string]*metric{
 		"client_connection_list": {},
+		"server_connection_list": {},
 	}
 
 	db2, mock2, err2 := sqlmock.New()
@@ -371,6 +385,10 @@ func TestScrapeMySQLConnectionListError(t *testing.T) {
 	columns := []string{"connection_count", "cli_host"}
 	rows := sqlmock.NewRows(columns).AddRow("10", "10.91.142.80")
 	mock2.ExpectQuery(sanitizeQuery(mySQLConnectionListQuery)).WillReturnRows(rows)
+
+	scolumns := []string{"srv_connection_count", "srv_host"}
+	srows := sqlmock.NewRows(scolumns).AddRow("10", "10.91.142.80")
+	mock2.ExpectQuery(sanitizeQuery(mySQLSrvConnectionListQuery)).WillReturnRows(srows)
 
 	ch2 := make(chan prometheus.Metric)
 	go func() {
