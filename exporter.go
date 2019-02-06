@@ -353,20 +353,29 @@ func scrapeMySQLConnectionPool(db *sql.DB, ch chan<- prometheus.Metric) error {
 	return rows.Err()
 }
 
-const mySQLConnectionListQuery = "SELECT COUNT(cli_host) as connection_count, cli_host FROM stats_mysql_processlist GROUP BY cli_host"
-const mySQLSrvConnectionListQuery = "SELECT COUNT(srv_host) as srv_connection_count, srv_host FROM stats_mysql_processlist GROUP BY srv_host"
+const mySQLConnectionListQuery = "SELECT cli_host, srv_host FROM stats_mysql_processlist"
 
 var mySQLconnectionListMetrics = map[string]*metric{
-	"connection_count": {
+	"client_connection_count": {
 		name:      "client_connection_list",
 		valueType: prometheus.GaugeValue,
 		help:      "Total number of frontend connections",
 	},
-	"srv_connection_count": {
+	"server_connection_count": {
 		name:      "server_connection_list",
 		valueType: prometheus.GaugeValue,
 		help:      "Total number of backend connections",
 	},
+}
+
+var connectionListMetricsLabelNameMap = map[string]string{
+	"client_host": "client_connection_count",
+	"server_host": "server_connection_count",
+}
+
+var connectionListMetricsColumnLabelMap = map[string]string{
+	"cli_host": "client_host",
+	"srv_host": "server_host",
 }
 
 // scrapeMySQLConnectionList collects connection list from `stats_mysql_processlist`.
@@ -382,78 +391,62 @@ func scrapeMySQLConnectionList(db *sql.DB, ch chan<- prometheus.Metric) error {
 		return err
 	}
 
-	var host string
-	var connNum float64
-
+	var cliHost, srvHost string
+	var ok bool
+	pMetrics := map[string]map[string]float64{}
 	for rows.Next() {
-		if err = rows.Scan(&connNum, &host); err != nil {
+		if err = rows.Scan(&cliHost, &srvHost); err != nil {
 			return err
 		}
 
-		column := strings.ToLower(columns[0])
-
-		m := mySQLconnectionListMetrics[column]
-		if m == nil {
-			m = &metric{
-				name:      "client_connection_list",
-				valueType: prometheus.UntypedValue,
-				help:      "Undocumented stats_mysql_processlist metric.",
+		for _, c := range columns {
+			switch c {
+			case "cli_host":
+				_, ok = pMetrics[c]
+				if !ok {
+					pMetrics[c] = map[string]float64{
+						cliHost: 0,
+					}
+				}
+				pMetrics[c][cliHost]++
+			case "srv_host":
+				_, ok = pMetrics[c]
+				if !ok {
+					pMetrics[c] = map[string]float64{
+						srvHost: 0,
+					}
+				}
+				pMetrics[c][srvHost]++
+			default:
 			}
 		}
-
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(
-				prometheus.BuildFQName(namespace, "processlist", m.name),
-				m.help,
-				[]string{"client_host"},
-				nil,
-			),
-			m.valueType, connNum, host,
-		)
 	}
 	if err = rows.Err(); err != nil {
 		return err
 	}
 
-	srvrows, err := db.Query(mySQLSrvConnectionListQuery)
-	if err != nil {
-		return err
-	}
-	defer srvrows.Close()
-
-	columns, err = srvrows.Columns()
-	if err != nil {
-		return err
-	}
-
-	for srvrows.Next() {
-		if err = srvrows.Scan(&connNum, &host); err != nil {
-			return err
-		}
-
-		column := strings.ToLower(columns[0])
-
-		m := mySQLconnectionListMetrics[column]
-		if m == nil {
-			m = &metric{
-				name:      "server_connection_list",
-				valueType: prometheus.UntypedValue,
-				help:      "Undocumented stats_mysql_processlist metric.",
+	for col, v := range pMetrics {
+		label := connectionListMetricsColumnLabelMap[col]
+		name := connectionListMetricsLabelNameMap[label]
+		for host, connNum := range v {
+			m := mySQLconnectionListMetrics[name]
+			if m == nil {
+				m = &metric{
+					name:      "unknown_connection_list",
+					valueType: prometheus.UntypedValue,
+					help:      "Undocumented stats_mysql_processlist metric.",
+				}
 			}
+			ch <- prometheus.MustNewConstMetric(
+				prometheus.NewDesc(
+					prometheus.BuildFQName(namespace, "processlist", m.name),
+					m.help,
+					[]string{label},
+					nil,
+				),
+				m.valueType, connNum, host,
+			)
 		}
-
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(
-				prometheus.BuildFQName(namespace, "processlist", m.name),
-				m.help,
-				[]string{"server_host"},
-				nil,
-			),
-			m.valueType, connNum, host,
-		)
-	}
-	if err = srvrows.Err(); err != nil {
-		return err
 	}
 
 	return nil
